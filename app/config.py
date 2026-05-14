@@ -58,6 +58,8 @@ class Settings:
     db_path: str
     web_host: str
     web_port: int
+    npu_threads: int
+    use_native: bool
 
 
 def load_settings(config_path: str) -> Settings:
@@ -96,4 +98,6 @@ def load_settings(config_path: str) -> Settings:
         db_path=raw["db_path"],
         web_host=raw.get("web_host", "0.0.0.0"),
         web_port=int(raw.get("web_port", 8080)),
+        npu_threads=int(raw.get("npu_threads", 1)),
+        use_native=bool(raw.get("use_native", False)),
     )

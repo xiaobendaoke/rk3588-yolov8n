@@ -152,6 +152,11 @@ class InferenceEngine:
             return []
         self._log_output_summary_once(outputs)
 
+        # 尝试 YOLO11 格式解码 (3个输出: box, class_scores, confidence_sum)
+        yolo11_dets = self._try_decode_yolo11(outputs, ts_ms)
+        if yolo11_dets is not None:
+            return yolo11_dets
+
         decoded: list[tuple[int, float, tuple[int, int, int, int]]] = []
         merged = self._try_merge_split_outputs(outputs)
         if merged is not None:
@@ -166,6 +171,142 @@ class InferenceEngine:
             return []
 
         return self._apply_nms(decoded, ts_ms)
+
+    def _try_decode_yolo11(self, outputs: list[np.ndarray], ts_ms: int) -> List[Detection] | None:
+        """尝试以 YOLO11 格式解码输出。
+
+        YOLO11 输出 9 个张量 (3个尺度 x 3个张量):
+        - [1, 64, H, W]: 边界框坐标 (DFL格式)
+        - [1, 80, H, W]: 每个类别的置信度
+        - [1, 1, H, W]: 置信度总和 (官方代码忽略此项)
+
+        Args:
+            outputs: RKNN 模型输出的张量列表。
+            ts_ms: 检测结果的毫秒级时间戳。
+
+        Returns:
+            如果是YOLO11格式则返回Detection列表，否则返回None。
+        """
+        # YOLO11 输出必须是 9 个 (3 scales x 3 tensors)
+        if len(outputs) != 9:
+            return None
+
+        try:
+            # 验证输出形状
+            for i in range(0, 9, 3):
+                box_shape = np.asarray(outputs[i]).shape
+                cls_shape = np.asarray(outputs[i + 1]).shape
+                conf_shape = np.asarray(outputs[i + 2]).shape
+                # box: [1, 64, H, W], cls: [1, 80, H, W], conf: [1, 1, H, W]
+                if (len(box_shape) != 4 or box_shape[1] != 64 or
+                    len(cls_shape) != 4 or cls_shape[1] != len(self.class_names) or
+                    len(conf_shape) != 4 or conf_shape[1] != 1):
+                    return None
+
+            self._log.info("Detected YOLO11 output format (9 outputs, 3 scales)")
+            decoded: list[tuple[int, float, tuple[int, int, int, int]]] = []
+
+            for i in range(0, 9, 3):
+                box_arr = np.asarray(outputs[i], dtype=np.float32)
+                cls_arr = np.asarray(outputs[i + 1], dtype=np.float32)
+                # conf_arr = np.asarray(outputs[i + 2], dtype=np.float32)  # 官方忽略
+
+                decoded.extend(self._decode_yolo11_scale(box_arr, cls_arr))
+
+            if not decoded:
+                return []
+
+            return self._apply_nms(decoded, ts_ms)
+
+        except Exception as e:
+            self._log.debug("YOLO11 decode failed: %s", e)
+            return None
+
+    def _decode_yolo11_scale(self, box_arr: np.ndarray, cls_arr: np.ndarray) -> list[tuple[int, float, tuple[int, int, int, int]]]:
+        """解码单个尺度的YOLO11输出。
+
+        Args:
+            box_arr: 边界框 [1, 64, H, W]。
+            cls_arr: 类别置信度 [1, 80, H, W]。
+
+        Returns:
+            (class_id, confidence, bbox_xyxy) 元组的列表。
+        """
+        decoded: list[tuple[int, float, tuple[int, int, int, int]]] = []
+
+        # DFL解码边界框 -> [1, 4, H, W]
+        dfl_boxes = self._dfl(box_arr)
+        _, _, grid_h, grid_w = dfl_boxes.shape
+
+        # 生成网格
+        col = np.arange(0, grid_w).reshape(1, 1, 1, grid_w)
+        row = np.arange(0, grid_h).reshape(1, 1, grid_h, 1)
+        grid_x = np.broadcast_to(col, (1, 1, grid_h, grid_w)).astype(np.float32)
+        grid_y = np.broadcast_to(row, (1, 1, grid_h, grid_w)).astype(np.float32)
+
+        stride_h = self.input_size / grid_h
+        stride_w = self.input_size / grid_w
+
+        # xyxy = (grid + 0.5 - dfl[:,0:2]) * stride, (grid + 0.5 + dfl[:,2:4]) * stride
+        x1 = (grid_x + 0.5 - dfl_boxes[:, 0:1, :, :]) * stride_w
+        y1 = (grid_y + 0.5 - dfl_boxes[:, 1:2, :, :]) * stride_h
+        x2 = (grid_x + 0.5 + dfl_boxes[:, 2:3, :, :]) * stride_w
+        y2 = (grid_y + 0.5 + dfl_boxes[:, 3:4, :, :]) * stride_h
+
+        # 获取类别分数 max per position
+        cls_max = np.max(cls_arr, axis=1, keepdims=False)  # [1, H, W]
+        cls_id = np.argmax(cls_arr, axis=1)  # [1, H, W]
+
+        # 筛选超过阈值的位置
+        mask = cls_max[0] >= self.conf_threshold
+        positions = np.argwhere(mask)
+
+        for pos in positions:
+            gy, gx = int(pos[0]), int(pos[1])
+            conf = float(cls_max[0, gy, gx])
+            cid = int(cls_id[0, gy, gx])
+
+            if cid < 0 or cid >= len(self.class_names):
+                continue
+
+            bbox = self._clip_xyxy(
+                float(x1[0, 0, gy, gx]),
+                float(y1[0, 0, gy, gx]),
+                float(x2[0, 0, gy, gx]),
+                float(y2[0, 0, gy, gx]),
+            )
+            if bbox is None:
+                continue
+
+            decoded.append((cid, conf, bbox))
+
+        return decoded
+
+    @staticmethod
+    def _dfl(box_arr: np.ndarray) -> np.ndarray:
+        """Distribution Focal Loss 解码。
+
+        将 [1, 64, H, W] 转换为 [1, 4, H, W]，每16个通道通过softmax加权求和。
+
+        Args:
+            box_arr: 原始边界框 [1, 64, H, W]。
+
+        Returns:
+            解码后的坐标 [1, 4, H, W]。
+        """
+        n, c, h, w = box_arr.shape
+        p_num = 4
+        mc = c // p_num  # 16
+        y = box_arr.reshape(n, p_num, mc, h, w)
+        # softmax
+        y_max = np.max(y, axis=2, keepdims=True)
+        y_exp = np.exp(y - y_max)
+        y_sum = np.sum(y_exp, axis=2, keepdims=True)
+        y = y_exp / y_sum
+        # weighted sum
+        acc = np.arange(mc, dtype=np.float32).reshape(1, 1, mc, 1, 1)
+        y = (y * acc).sum(axis=2)
+        return y
 
     def _to_prediction_matrix(self, out: np.ndarray) -> np.ndarray | None:
         """将原始输出张量转换为标准化的预测矩阵。

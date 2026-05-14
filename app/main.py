@@ -14,6 +14,7 @@ import uvicorn
 from app.capture.camera import CameraCapture
 from app.config import load_settings
 from app.infer.engine import InferenceEngine
+from app.infer.native_engine import NativeInferenceEngine
 from app.rules.engine import RuleConfig, RuleEngine
 from app.storage.events import EventStore
 from app.web.server import AppState, annotate_frame, create_app
@@ -180,7 +181,7 @@ def save_snapshot(snapshot_root: str, frame) -> str:
 
 def infer_loop(
     camera: CameraCapture,
-    infer: InferenceEngine,
+    infer,
     rules: RuleEngine,
     state: AppState,
     settings,
@@ -201,6 +202,94 @@ def infer_loop(
         store: 用于持久化风险事件的事件存储。
         log: 日志记录器实例。
     """
+    from app.infer.native_engine import NativeInferenceEngine
+
+    if isinstance(infer, NativeInferenceEngine) and infer._pool is not None:
+        _infer_loop_native(camera, infer, rules, state, settings, store, log)
+    else:
+        _infer_loop_standard(camera, infer, rules, state, settings, store, log)
+
+
+def _infer_loop_native(
+    camera: CameraCapture,
+    infer,
+    rules: RuleEngine,
+    state: AppState,
+    settings,
+    store: EventStore,
+    log: logging.Logger,
+) -> None:
+    """异步推理循环：利用多线程并行推理。"""
+    import cv2
+    from collections import deque
+    from concurrent.futures import Future
+
+    last = time.time()
+    frames = 0
+    frame_size_logged = False
+
+    # 流水线：提交多个帧到线程池
+    pending: deque[tuple[Future, np.ndarray]] = deque(maxlen=infer.n_workers + 1)
+
+    while True:
+        frame = camera.read()
+        if not frame_size_logged:
+            log.info("camera frame size: %dx%d", frame.shape[1], frame.shape[0])
+            frame_size_logged = True
+
+        # Resize 并提交异步推理
+        resized = cv2.resize(frame, (infer.input_size, infer.input_size))
+        fut = infer.infer_async(resized)
+        pending.append((fut, resized))
+
+        # 收集已完成的结果
+        if len(pending) > infer.n_workers:
+            fut, model_frame = pending.popleft()
+            detections = fut.result(timeout=5)
+            risks = rules.evaluate(detections)
+            annotated = annotate_frame(model_frame.copy(), detections, risks)
+
+            for risk in risks:
+                snapshot_path = save_snapshot(settings.snapshot_root, annotated)
+                event_id = store.insert_event(risk, snapshot_path)
+                with state.lock:
+                    state.status.last_event_time = datetime.now().isoformat(timespec="seconds")
+                log.warning("event id=%s type=%s severity=%s", event_id, risk.risk_type, risk.severity)
+
+            ok, jpg = cv2.imencode(".jpg", annotated, [cv2.IMWRITE_JPEG_QUALITY, 70])
+            if ok:
+                with state.lock:
+                    state.latest_jpeg = jpg.tobytes()
+                    state.status.queue_size = 0
+                    state.status.npu_load = read_npu_load()
+                    state.status.gpu_load = read_gpu_load()
+                    state.status.detection_count = len(detections)
+
+            frames += 1
+            now = time.time()
+            if now - last >= 1.0:
+                fps = frames / (now - last)
+                with state.lock:
+                    state.status.fps = fps
+                    state.status.cpu_percent = read_cpu_percent()
+                    state.status.mem_percent = read_mem_percent()
+                    state.status.cpu_temp = read_thermal("thermal_zone0")
+                    state.status.gpu_temp = read_thermal("thermal_zone1")
+                log.info("fps=%.2f detections=%d risks=%d", fps, len(detections), len(risks))
+                frames = 0
+                last = now
+
+
+def _infer_loop_standard(
+    camera: CameraCapture,
+    infer,
+    rules: RuleEngine,
+    state: AppState,
+    settings,
+    store: EventStore,
+    log: logging.Logger,
+) -> None:
+    """标准推理循环（单线程）。"""
     last = time.time()
     frames = 0
     frame_size_logged = False
@@ -269,13 +358,33 @@ def run_pipeline(args: argparse.Namespace) -> None:
     store.init_schema()
 
     camera = CameraCapture(settings.camera_device, settings.camera_width, settings.camera_height, settings.camera_crop_left)
-    infer = InferenceEngine(
-        settings.model_path,
-        settings.class_names,
-        settings.conf_threshold,
-        settings.nms_threshold,
-        settings.input_size,
-    )
+
+    if settings.use_native:
+        infer = NativeInferenceEngine(
+            settings.model_path,
+            settings.class_names,
+            settings.conf_threshold,
+            settings.nms_threshold,
+            settings.input_size,
+        )
+    elif settings.npu_threads > 1:
+        from app.infer.multi_process import MultiProcessEngine
+        infer = MultiProcessEngine(
+            settings.model_path,
+            settings.class_names,
+            settings.conf_threshold,
+            settings.nms_threshold,
+            settings.input_size,
+            n_workers=settings.npu_threads,
+        )
+    else:
+        infer = InferenceEngine(
+            settings.model_path,
+            settings.class_names,
+            settings.conf_threshold,
+            settings.nms_threshold,
+            settings.input_size,
+        )
     rules = RuleEngine(
         RuleConfig(
             risk_distance_px=settings.risk_distance_px,

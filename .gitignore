@@ -6,6 +6,10 @@ __pycache__/
 *.pyc
 *.pyo
 
+# 模型文件（大文件，不提交到 git）
+models/*.rknn
+!models/detector.rknn
+
 # 依赖包
 wheelhouse/
 
