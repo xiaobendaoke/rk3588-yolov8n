@@ -12,6 +12,11 @@ from app.infer.engine import InferenceEngine
 
 
 def parse_args() -> argparse.Namespace:
+    """解析采样推理脚本的命令行参数。
+
+    Returns:
+        解析后的参数，包含配置文件路径、帧数和间隔。
+    """
     p = argparse.ArgumentParser(description="Sample inference for decode validation")
     p.add_argument("--config", default="./configs/config.yaml")
     p.add_argument("--frames", type=int, default=100)
@@ -20,11 +25,27 @@ def parse_args() -> argparse.Namespace:
 
 
 def is_valid_box(box: tuple[int, int, int, int], limit: int) -> bool:
+    """检查边界框是否在有效范围内且有正面积。
+
+    Args:
+        box: (x1, y1, x2, y2) 格式的边界框。
+        limit: 允许的最大坐标值（包含）。
+
+    Returns:
+        框有效且面积为正时返回 True。
+    """
     x1, y1, x2, y2 = box
     return 0 <= x1 < x2 <= limit and 0 <= y1 < y2 <= limit
 
 
 def main() -> int:
+    """对可配置数量的帧运行采样推理并验证输出。
+
+    收集总检测数、无效置信度、无效边界框和类别分布直方图的统计信息。
+
+    Returns:
+        所有检测都有效时返回 0，发现无效检测时返回 2。
+    """
     args = parse_args()
     cfg = load_settings(args.config)
     cam = CameraCapture(cfg.camera_device, cfg.camera_width, cfg.camera_height)

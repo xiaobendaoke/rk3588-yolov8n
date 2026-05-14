@@ -1,1 +1,4 @@
-"""Desk safety monitoring application package."""
+"""桌面安全监控应用包。
+
+基于实时视觉的安全监控系统，使用 RKNN 模型推理检测桌面物体并评估安全规则。
+"""

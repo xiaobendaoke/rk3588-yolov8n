@@ -9,6 +9,33 @@ import yaml
 
 @dataclass(slots=True)
 class Settings:
+    """从 YAML 文件加载的应用配置。
+
+    Attributes:
+        app_name: 应用名称。
+        log_level: 日志级别（如 "INFO", "DEBUG"）。
+        camera_device: 摄像头设备路径（如 "/dev/video0"）。
+        camera_width: 摄像头捕获宽度（像素）。
+        camera_height: 摄像头捕获高度（像素）。
+        camera_crop_left: 是否裁剪左半帧（用于双目摄像头）。
+        input_size: 模型输入尺寸（宽高相同，正方形）。
+        infer_interval_ms: 推理间隔（毫秒）。
+        model_path: RKNN 模型文件路径。
+        class_names: 模型可检测的类别名称列表。
+        conf_threshold: 检测结果置信度阈值。
+        nms_threshold: NMS 去重的 IoU 阈值。
+        risk_distance_px: 液体-设备接近风险的像素距离阈值。
+        risk_hold_frames: 确认风险所需的连续帧数。
+        event_cooldown_sec: 同类型风险事件的最小间隔秒数。
+        danger_roi: 尖锐工具检测的危险区域 [x1, y1, x2, y2]。
+        dense_count_threshold: 桌面拥挤风险的目标数量阈值。
+        dense_iou_sum_threshold: 桌面拥挤风险的 IoU 总和阈值。
+        snapshot_root: 事件快照保存的根目录。
+        db_path: SQLite 数据库文件路径。
+        web_host: Web 服务器绑定地址。
+        web_port: Web 服务器绑定端口。
+    """
+
     app_name: str
     log_level: str
     camera_device: str
@@ -34,6 +61,14 @@ class Settings:
 
 
 def load_settings(config_path: str) -> Settings:
+    """从 YAML 配置文件加载应用设置。
+
+    Args:
+        config_path: YAML 配置文件路径。
+
+    Returns:
+        填充完整的 Settings 实例，缺失的可选字段使用合理默认值。
+    """
     path = Path(config_path)
     with path.open("r", encoding="utf-8") as f:
         raw = yaml.safe_load(f)

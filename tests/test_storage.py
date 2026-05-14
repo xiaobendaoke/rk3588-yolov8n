@@ -3,6 +3,7 @@ from app.types import Detection, RiskEventCandidate
 
 
 def test_insert_and_query_event(tmp_path):
+    """测试插入风险事件并通过 list_events 查询。"""
     db = tmp_path / "events.db"
     store = EventStore(str(db))
     store.init_schema()

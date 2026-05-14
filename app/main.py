@@ -20,12 +20,23 @@ from app.web.server import AppState, annotate_frame, create_app
 
 
 def parse_args() -> argparse.Namespace:
+    """解析命令行参数。
+
+    Returns:
+        解析后的参数命名空间，包含配置文件路径。
+    """
     p = argparse.ArgumentParser(description="Desk safety monitor")
     p.add_argument("--config", default="./configs/config.yaml")
     return p.parse_args()
 
 
 def setup_logging(level: str, log_dir: str = "./logs") -> None:
+    """配置日志系统，同时输出到控制台和轮转文件。
+
+    Args:
+        level: 日志级别字符串（如 "INFO", "DEBUG"）。
+        log_dir: 日志文件目录路径。
+    """
     Path(log_dir).mkdir(parents=True, exist_ok=True)
     rotating = RotatingFileHandler(
         Path(log_dir) / "desk-safety.log",
@@ -44,6 +55,11 @@ def setup_logging(level: str, log_dir: str = "./logs") -> None:
 
 
 def read_npu_load() -> float:
+    """从 sysfs 读取 NPU 负载百分比。
+
+    Returns:
+        NPU 负载百分比（0-100），不可用时返回 0.0。
+    """
     path = Path("/sys/class/devfreq/fdab0000.npu/load")
     if not path.exists():
         return 0.0
@@ -57,6 +73,11 @@ def read_npu_load() -> float:
 
 
 def read_gpu_load() -> float:
+    """从 sysfs 读取 GPU 负载百分比。
+
+    Returns:
+        GPU 负载百分比（0-100），不可用时返回 0.0。
+    """
     path = Path("/sys/class/devfreq/fb000000.gpu/load")
     if not path.exists():
         return 0.0
@@ -70,6 +91,13 @@ def read_gpu_load() -> float:
 
 
 def read_cpu_percent() -> float:
+    """从 /proc/stat 读取 CPU 使用率百分比。
+
+    使用前一次采样值计算基于差值的利用率。
+
+    Returns:
+        CPU 使用率百分比（0-100），出错时返回 0.0。
+    """
     try:
         with open("/proc/stat", "r") as f:
             line = f.readline()
@@ -91,6 +119,11 @@ def read_cpu_percent() -> float:
 
 
 def read_mem_percent() -> float:
+    """从 /proc/meminfo 读取内存使用率百分比。
+
+    Returns:
+        内存使用率百分比（0-100），出错时返回 0.0。
+    """
     try:
         with open("/proc/meminfo", "r") as f:
             lines = f.readlines()
@@ -107,6 +140,14 @@ def read_mem_percent() -> float:
 
 
 def read_thermal(zone: str) -> float:
+    """从 sysfs 的热区读取温度。
+
+    Args:
+        zone: 热区名称（如 "thermal_zone0"）。
+
+    Returns:
+        摄氏度温度值，不可用时返回 0.0。
+    """
     path = Path(f"/sys/class/thermal/{zone}/temp")
     if not path.exists():
         return 0.0
@@ -118,6 +159,15 @@ def read_thermal(zone: str) -> float:
 
 
 def save_snapshot(snapshot_root: str, frame) -> str:
+    """将帧保存为按日期组织的 JPEG 快照文件。
+
+    Args:
+        snapshot_root: 快照存储的根目录。
+        frame: 要保存的图像帧（numpy 数组）。
+
+    Returns:
+        保存的快照文件的完整路径。
+    """
     now = datetime.now()
     day = now.strftime("%Y-%m-%d")
     stamp = now.strftime("%Y%m%d_%H%M%S_%f")
@@ -137,6 +187,20 @@ def infer_loop(
     store: EventStore,
     log: logging.Logger,
 ) -> None:
+    """主推理循环：捕获、检测、评估风险并提供帧服务。
+
+    持续运行，从摄像头读取帧，执行推理，评估安全规则，为风险事件保存
+    快照，并用最新帧和状态更新共享的 Web 服务器状态。
+
+    Args:
+        camera: 摄像头捕获实例。
+        infer: 目标检测推理引擎。
+        rules: 风险评估规则引擎。
+        state: Web 服务器的共享应用状态。
+        settings: 应用设置（用于 snapshot_root 和 interval）。
+        store: 用于持久化风险事件的事件存储。
+        log: 日志记录器实例。
+    """
     last = time.time()
     frames = 0
     frame_size_logged = False
@@ -187,6 +251,14 @@ def infer_loop(
 
 
 def run_pipeline(args: argparse.Namespace) -> None:
+    """运行完整的桌面安全监控管道。
+
+    初始化所有组件（摄像头、推理、规则、存储、Web 服务器），
+    启动 Web 服务器和推理循环线程，然后阻塞直到中断。
+
+    Args:
+        args: 解析后的命令行参数。
+    """
     settings = load_settings(args.config)
     setup_logging(settings.log_level)
     log = logging.getLogger("desk-safety")

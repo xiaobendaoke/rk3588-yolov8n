@@ -3,11 +3,31 @@ from app.types import Detection
 
 
 def _d(ts, cls, conf, box):
+    """创建带有预定义类别名称的 Detection 对象。
+
+    Args:
+        ts: 毫秒级时间戳。
+        cls: 类别索引（0=cup, 1=phone, 2=keyboard, 3=scissors）。
+        conf: 置信度分数。
+        box: (x1, y1, x2, y2) 格式的边界框。
+
+    Returns:
+        Detection 实例。
+    """
     names = ["cup", "phone", "keyboard", "scissors"]
     return Detection(ts_ms=ts, class_id=cls, class_name=names[cls], conf=conf, bbox_xyxy=box)
 
 
 def _engine(hold=1, cooldown=0):
+    """创建带有测试配置的 RuleEngine。
+
+    Args:
+        hold: 发出事件前需要持续的帧数。
+        cooldown: 同类型事件之间的冷却时间（秒）。
+
+    Returns:
+        配置好的 RuleEngine 实例。
+    """
     return RuleEngine(
         RuleConfig(
             risk_distance_px=120,
@@ -21,6 +41,7 @@ def _engine(hold=1, cooldown=0):
 
 
 def test_liquid_near_electronics_trigger():
+    """测试杯子靠近手机时触发液体靠近电子设备规则。"""
     e = _engine()
     ds = [
         _d(1, 0, 0.9, (100, 100, 170, 170)),
@@ -32,6 +53,7 @@ def test_liquid_near_electronics_trigger():
 
 
 def test_sharp_tool_roi_trigger():
+    """测试剪刀在危险区域内时触发尖锐工具误放规则。"""
     e = _engine()
     ds = [_d(1, 3, 0.9, (500, 400, 580, 500))]
     out = e.evaluate(ds)
@@ -39,6 +61,7 @@ def test_sharp_tool_roi_trigger():
 
 
 def test_dense_trigger_count_threshold():
+    """测试4个或更多目标通过数量阈值触发桌面拥挤规则。"""
     e = _engine()
     ds = [
         _d(1, 0, 0.9, (10, 10, 90, 90)),
@@ -51,6 +74,7 @@ def test_dense_trigger_count_threshold():
 
 
 def test_dense_trigger_iou_sum_without_count_threshold():
+    """测试高 IoU 总和即使目标数量较少也触发桌面拥挤规则。"""
     e = _engine()
     ds = [
         _d(1, 0, 0.9, (100, 100, 220, 220)),
@@ -62,6 +86,7 @@ def test_dense_trigger_iou_sum_without_count_threshold():
 
 
 def test_hold_and_cooldown():
+    """测试持续帧计数和冷却机制抑制重复事件。"""
     e = _engine(hold=2, cooldown=100)
     ds = [
         _d(1, 0, 0.9, (100, 100, 170, 170)),

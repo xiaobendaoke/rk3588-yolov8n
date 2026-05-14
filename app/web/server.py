@@ -12,7 +12,19 @@ from app.types import RuntimeStatus
 
 
 class AppState:
+    """推理循环和 Web 服务器之间的共享状态。
+
+    存储最新帧、其 JPEG 编码和运行时状态，通过锁保护实现线程安全访问。
+
+    Attributes:
+        lock: 用于同步帧和状态访问的线程锁。
+        latest_frame: 最新的原始帧（numpy 数组或 None）。
+        latest_jpeg: 最新帧编码为 JPEG 字节。
+        status: 当前运行时状态快照。
+    """
+
     def __init__(self) -> None:
+        """初始化共享应用状态。"""
         self.lock = threading.Lock()
         self.latest_frame = None
         self.latest_jpeg = b""
@@ -25,10 +37,24 @@ def create_app(
     get_event: Callable[[int], dict | None] | None = None,
     get_event_stats: Callable[[], dict] | None = None,
 ) -> FastAPI:
+    """创建并配置 FastAPI Web 应用。
+
+    注册仪表板、实时视频流、帧服务、事件 API 和系统状态接口的路由。
+
+    Args:
+        state: 用于线程安全数据访问的共享应用状态。
+        list_events: 列出事件的可调用对象（支持分页/过滤）。
+        get_event: 根据 ID 获取单条事件的可调用对象。
+        get_event_stats: 获取事件统计信息的可调用对象。
+
+    Returns:
+        配置好的 FastAPI 应用实例。
+    """
     app = FastAPI(title="Desk Safety")
 
     @app.get("/", response_class=HTMLResponse)
     def index() -> str:
+        """提供主监控仪表板 HTML 页面。"""
         return """
 <!doctype html>
 <html>
@@ -367,6 +393,7 @@ def create_app(
 
     @app.get("/live.mjpg")
     def live_mjpg() -> StreamingResponse:
+        """以 MJPEG 视频流方式推送最新帧。"""
         def stream():
             while True:
                 with state.lock:
@@ -380,6 +407,7 @@ def create_app(
 
     @app.get("/frame.jpg")
     def frame_jpeg() -> Response:
+        """提供最新帧的静态 JPEG 图片。"""
         with state.lock:
             frame = state.latest_jpeg
         if frame:
@@ -392,17 +420,20 @@ def create_app(
         size: int = Query(default=20, ge=1, le=200),
         risk_type: Optional[str] = Query(default=None),
     ) -> JSONResponse:
+        """列出风险事件，支持分页和可选的风险类型过滤。"""
         items = list_events(page=page, size=size, risk_type=risk_type)
         return JSONResponse({"page": page, "size": size, "items": items})
 
     @app.get("/api/events/stats")
     def api_event_stats() -> JSONResponse:
+        """获取事件聚合统计信息。"""
         if get_event_stats is None:
             return JSONResponse({"error": "not supported"}, status_code=501)
         return JSONResponse(get_event_stats())
 
     @app.get("/api/events/{event_id}")
     def api_event_detail(event_id: int) -> JSONResponse:
+        """根据 ID 获取单条风险事件详情。"""
         if get_event is None:
             return JSONResponse({"error": "not supported"}, status_code=501)
         item = get_event(event_id)
@@ -412,6 +443,7 @@ def create_app(
 
     @app.get("/api/status")
     def api_status() -> JSONResponse:
+        """获取当前系统运行时状态。"""
         with state.lock:
             status = {
                 "fps": round(state.status.fps, 2),
@@ -431,6 +463,16 @@ def create_app(
 
 
 def annotate_frame(frame, detections, risks):
+    """在帧上绘制检测框和风险标签。
+
+    Args:
+        frame: 要标注的图像帧（原地修改）。
+        detections: 要绘制的 Detection 对象列表。
+        risks: 要显示为文本的 RiskEventCandidate 对象列表。
+
+    Returns:
+        标注后的帧（与输入相同对象，原地修改）。
+    """
     for d in detections:
         x1, y1, x2, y2 = d.bbox_xyxy
         cv2.rectangle(frame, (x1, y1), (x2, y2), (80, 220, 80), 2)
