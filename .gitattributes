@@ -1,0 +1,10 @@
+# 二进制文件标记
+*.rknn binary
+*.db binary
+
+# 确保换行符不会被修改
+*.sh text eol=lf
+*.py text eol=lf
+*.yaml text eol=lf
+*.yml text eol=lf
+*.md text eol=lf

@@ -1,0 +1,42 @@
+# 运行时数据和缓存
+logs/
+data/
+.pytest_cache/
+__pycache__/
+*.pyc
+*.pyo
+
+# 依赖包
+wheelhouse/
+
+# 配置文件（包含设备特定路径）
+configs/config.yaml
+
+# 环境特定文件
+systemd/
+
+# 虚拟环境
+.venv/
+venv/
+env/
+
+# IDE和编辑器文件
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# 系统文件
+.DS_Store
+Thumbs.db
+
+# 构建和分发目录
+dist/
+build/
+*.egg-info/
+.eggs/
+
+# 临时文件
+*.tmp
+*.temp
+*.log
